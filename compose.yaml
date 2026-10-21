@@ -1,0 +1,12 @@
+services:
+  embedding:
+    build: .
+    image: social-embedding-service:1.0
+    ports:
+      - "8000:8000"
+    environment:
+      MODEL_DIR: /app/model
+      ORT_INTRA_OP_THREADS: "2"
+    cpus: 2.0
+    mem_limit: ${MEMORY_LIMIT:-1g}
+    memswap_limit: ${MEMORY_LIMIT:-1g}

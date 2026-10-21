@@ -1,0 +1,8 @@
+.git
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.DS_Store
+*.zip
+model/encoder_fp32.onnx
