@@ -1,15 +1,17 @@
 # Final container and performance measurements
 
-Measured 2026-10-21 against the optimized `social-embedding-service:1.0` image and the local quantized model. These are measurements from the available Apple Silicon Docker host (`linux/arm64`, 10 reported host CPUs, 8.2 GB host memory), with the container capped at 2 CPUs and ONNX Runtime set to two intra-op threads. Request latency includes HTTP round-trip time from a local async client. Latency numbers are milliseconds.
+Measured 2026-10-21 against the local quantized model. The detailed request latency and stress tables below were collected before the image-slimming work. The optimization comparison at the end measures the original and final runtime images under the same 512 MiB/2-CPU profile. Host: Apple Silicon Docker (`linux/arm64`, 10 reported host CPUs, 8.2 GB host memory). Request latency includes local HTTP round-trip time. Latency numbers are milliseconds.
 
 ## Artifact and runtime
 
-- Image: 168,757,510 bytes (160.9 MiB), `linux/arm64`.
+- Final image: 477 MB in `docker image ls`, `linux/arm64`.
+- Docker's current storage report attributes about 403.7 MB of unique layers to this image, plus 73.1 MB of shared base layers. On a fresh host, plan for about 477 MB for the image itself; the model is already included.
+- The prior image was 661 MB in `docker image ls`. The final multi-stage Distroless image is 184 MB (about 28%) smaller by that measure.
 - Runtime user: UID/GID 10001.
 - Runtime provider: `CPUExecutionProvider`.
 - Limits: 2 CPUs, 512 MiB RAM, 512 MiB memory+swap (therefore no swap), two ONNX Runtime intra-op threads.
 - Both 1 GiB and 512 MiB profiles started and loaded the model. Restart-to-ready was about 1.1 seconds. The first embedding call after a 1 GiB restart took 5.83 ms.
-- Final container is running under the 512 MiB profile and reports healthy. It has had zero restarts and no OOM kill.
+- Final image passed Docker end-to-end checks with a 512 MiB memory cap, including an offline start, actual inference, concurrent calls, and a 64-text batch.
 
 Run either limit with Compose:
 
@@ -63,8 +65,21 @@ Peak sampled container memory using Docker stats was about 285.2 MiB under the 1
 
 - Real API embeddings returned 384 values per text with measured L2 norms 1.00000002 and 0.999999997.
 - Similarity endpoint returned 0.942073 for the golf sentence pair used in this run.
-- Full local test command, including the opt-in Docker end-to-end tests: `RUN_DOCKER_E2E=1 MODEL_DIR=./model ../.venv/bin/python -m pytest -q` — **50 passed, 1 skipped**.
+- Full local test command, including the opt-in Docker end-to-end tests: `TEST_IMAGE=social-embedding-service:1.0 TEST_MEMORY_LIMIT=512m RUN_DOCKER_E2E=1 MODEL_DIR=./model ../.venv/bin/python -m pytest -q` — **51 passed, 1 skipped**.
 - The skipped test requires genuine reference vectors from the original fine-tuned model. Those vectors (and the FP32 ONNX artifact) are not in the supplied release directory, so an ONNX-vs-original numerical parity test remains unverified. No reference vectors were fabricated.
 - Python compile check passed and `pip check` reported no broken requirements.
 
 These results characterize this local ARM64 container. Repeat the benchmark on the intended production CPU and request mix before choosing an SLA or final capacity reservation.
+
+## Image slimming experiment
+
+The original image used `transformers.AutoTokenizer` even though inference only needed to read the supplied `tokenizer.json`. The final runtime loads that file with Hugging Face `tokenizers`; a regression test compares token IDs and attention masks with the original Transformers tokenizer across plain text, punctuation, Unicode, emoji, and truncation. `transformers` remains in development requirements for that reference test, not in the production image.
+
+The final Dockerfile is multi-stage: it installs locked dependencies in the builder, then copies the runtime packages, app, and model to a pinned Distroless Python base. This removes the full builder/Python packaging environment from the shipped image. The final candidate passed all four Docker end-to-end tests at 512 MiB, including CPU-only offline inference.
+
+| Image | Single-client p50 | Single-client p95 | 8-client throughput | 8-client p95 | Memory sample after load |
+|---|---:|---:|---:|---:|---:|
+| Original Transformers image | 4.02 ms | 4.51 ms | 295.4 requests/s | 35.05 ms | 278.5 MiB |
+| Final Distroless + tokenizers image | 3.90 ms | 4.57 ms | 328.5 requests/s | 33.96 ms | 257.6 MiB |
+
+The comparison used 100 sequential one-text requests and then 400 one-text requests from eight concurrent clients, after warmup. Both were run with 2 CPUs and a 512 MiB cap, with zero errors. The memory value is a post-load sample, not a peak. Results are a small local A/B check; they do not replace a production-scale stress run. The older detailed stress figures above remain useful historical measurements, but were not repeated at that full duration after slimming.

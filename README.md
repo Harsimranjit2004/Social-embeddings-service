@@ -6,13 +6,13 @@ A small CPU-only FastAPI service for the fine-tuned `social-embedding-v1.0` mode
 
 | Metric | Result |
 |---|---:|
-| Single-text mean latency | **5.46 ms** |
-| Throughput at two concurrent clients | **366.72 texts/s** |
-| Peak sampled container memory | **294 MiB** |
-| Optimized Docker image | **160.9 MiB** |
-| Automated tests | **50 passed, 1 skipped** |
+| Single-text p50 latency | **3.90 ms** |
+| Throughput at eight concurrent clients | **328.5 one-text requests/s** |
+| Memory sample after load | **257.6 MiB** |
+| Optimized Docker image | **477 MB** |
+| Automated tests | **51 passed, 1 skipped** |
 
-Measured on an Apple Silicon Docker host (`linux/arm64`) with a 2-CPU limit, two ONNX Runtime threads, and a 512 MiB memory cap. The service stayed healthy and returned zero errors during the reported load tests. These are local measurements, not AWS performance guarantees. The skipped test is original-model parity: genuine reference embeddings and the FP32 reference encoder were not included in the supplied release. See [BENCHMARK.md](BENCHMARK.md) for full latency distributions, stress results at both 512 MiB and 1 GiB, test details, and limits.
+Measured on an Apple Silicon Docker host (`linux/arm64`) with a 2-CPU limit, two ONNX Runtime threads, and a 512 MiB memory cap. The optimized and original runtime images both returned zero errors in the 8-client comparison. These are local measurements, not AWS performance guarantees. The skipped test is original-model parity: genuine reference embeddings and the FP32 reference encoder were not included in the supplied release. See [BENCHMARK.md](BENCHMARK.md) for the image comparison, prior full stress results, test details, and limits.
 
 ## Model files
 
@@ -72,7 +72,7 @@ docker build -t social-embedding-service:1.0 .
 docker run --rm -p 8000:8000 social-embedding-service:1.0
 ```
 
-The image contains the selected UINT8 encoder and tokenizer/configuration artifacts (the unused FP32 encoder is excluded), runs as UID 10001, uses ONNX Runtime's `CPUExecutionProvider`, and includes a `/health` container health check. The production image omits Uvicorn's optional extras and Python bytecode; the measured ARM64 image is about 161 MiB. The recommended constrained profile is encoded in `compose.yaml`: 2 CPUs, 1 GiB RAM, no swap, and two ONNX Runtime threads.
+The image contains the selected UINT8 encoder and tokenizer/configuration artifacts (the unused FP32 encoder is excluded), runs as UID 10001, uses ONNX Runtime's `CPUExecutionProvider`, and includes a `/health` container health check. A multi-stage build installs dependencies in a builder and copies them into a Distroless Python runtime. The service uses the lower-level Hugging Face `tokenizers` package to load the local `tokenizer.json`; `transformers` is only a development dependency for exact tokenizer parity tests. The measured ARM64 image is 477 MB in `docker image ls` (about 403.7 MB unique layers on this Docker host, with 73.1 MB shared base layers). The recommended constrained profile is encoded in `compose.yaml`: 2 CPUs, 1 GiB RAM, no swap, and two ONNX Runtime threads.
 
 ```sh
 docker compose up --build -d
@@ -99,7 +99,7 @@ Run the Docker end-to-end tests against a constrained, non-root container (inclu
 
 ```sh
 docker compose up --build -d
-RUN_DOCKER_E2E=1 MODEL_DIR=./model python -m pytest tests/test_docker_e2e.py -v
+TEST_IMAGE=social-embedding-service:1.0 TEST_MEMORY_LIMIT=512m RUN_DOCKER_E2E=1 MODEL_DIR=./model python -m pytest tests/test_docker_e2e.py -v
 ```
 
 The suite loads the actual ONNX release for model and API tests. The additional comparison test compares the UINT8 results against `tests/reference_embeddings.json` (or `REFERENCE_EMBEDDINGS`) when supplied. The fixture must contain `texts`, `embeddings`, and provenance identifying the original model and CLS pooling. Otherwise, if `encoder_fp32.onnx` is present in `model/`, the test generates its genuine reference embeddings locally using that release encoder. No reference vectors are invented. The supplied ZIP omitted both `encoder_fp32.onnx` and reference vectors, so this integration test skips until either source is available.

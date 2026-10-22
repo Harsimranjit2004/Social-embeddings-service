@@ -21,7 +21,7 @@ def test_uses_cpu_execution_provider(model):
 
 def test_cls_pooling_truncation_and_l2_match_release_configuration(model):
     texts = ["short text", "a longer sentence with different padding behavior"]
-    tokenized = model.tokenizer(texts, padding=True, truncation=True, max_length=128, return_tensors="np")
+    tokenized = model._tokenize(texts)
     raw = model.session.run(
         [model.output_name], {name: value for name, value in tokenized.items() if name in model.input_names}
     )[0]
@@ -39,9 +39,28 @@ def test_embedding_is_invariant_to_batch_padding_within_quantization_tolerance(m
 
 
 def test_tokenization_truncates_to_release_maximum(model):
-    encoded = model.tokenizer(["golf " * 500], truncation=True, max_length=128, return_tensors="np")
+    encoded = model._tokenize(["golf " * 500])
     assert encoded["input_ids"].shape == (1, 128)
     assert encoded["attention_mask"].shape == (1, 128)
+
+
+def test_compact_tokenizer_matches_original_transformers_token_ids(model):
+    from transformers import AutoTokenizer
+
+    texts = [
+        "A person playing golf",
+        "Someone swinging a golf club",
+        "Café, dosa & idli!",
+        "emoji 😊 and punctuation — yes",
+        "A long input " * 80,
+    ]
+    reference = AutoTokenizer.from_pretrained(str(MODEL_DIR), local_files_only=True, use_fast=True)(
+        texts, padding=True, truncation=True, max_length=128, return_tensors="np"
+    )
+    actual = model._tokenize(texts)
+    np.testing.assert_array_equal(actual["input_ids"], reference["input_ids"])
+    np.testing.assert_array_equal(actual["attention_mask"], reference["attention_mask"])
+    np.testing.assert_array_equal(actual["token_type_ids"], reference["token_type_ids"])
 
 
 def test_duplicate_inputs_are_deterministic_and_normalized(model):

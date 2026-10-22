@@ -14,7 +14,9 @@ import httpx
 import numpy as np
 import pytest
 
-IMAGE = "social-embedding-service:1.0"
+IMAGE = os.getenv("TEST_IMAGE", "social-embedding-service:1.0")
+MEMORY_LIMIT = os.getenv("TEST_MEMORY_LIMIT", "1g")
+MEMORY_BYTES = int(MEMORY_LIMIT[:-1]) * {"m": 1024**2, "g": 1024**3}[MEMORY_LIMIT[-1].lower()]
 pytestmark = pytest.mark.skipif(
     os.getenv("RUN_DOCKER_E2E") != "1",
     reason="set RUN_DOCKER_E2E=1 to start and test the Docker image",
@@ -34,7 +36,7 @@ def service():
     name = "social-embedding-e2e-" + uuid.uuid4().hex[:8]
     container_id = docker(
         "run", "-d", "--name", name,
-        "--cpus=2", "--memory=1g", "--memory-swap=1g",
+        "--cpus=2", "--memory=" + MEMORY_LIMIT, "--memory-swap=" + MEMORY_LIMIT,
         "-e", "ORT_INTRA_OP_THREADS=2",
         "-p", "127.0.0.1::8000", IMAGE,
     )
@@ -64,8 +66,8 @@ def test_container_uses_expected_runtime_constraints_and_non_root_user(service):
     settings = json.loads(docker("inspect", container_id))[0]
     assert settings["Config"]["User"] == "10001:10001"
     assert settings["HostConfig"]["NanoCpus"] == 2_000_000_000
-    assert settings["HostConfig"]["Memory"] == 1024**3
-    assert settings["HostConfig"]["MemorySwap"] == 1024**3
+    assert settings["HostConfig"]["Memory"] == MEMORY_BYTES
+    assert settings["HostConfig"]["MemorySwap"] == MEMORY_BYTES
     assert "ORT_INTRA_OP_THREADS=2" in settings["Config"]["Env"]
     assert settings["State"]["OOMKilled"] is False
 
@@ -111,9 +113,8 @@ def test_container_starts_and_infers_without_network_access():
     name = "social-embedding-offline-" + uuid.uuid4().hex[:8]
     container_id = docker(
         "run", "-d", "--name", name, "--network=none",
-        "--cpus=2", "--memory=1g", "--memory-swap=1g",
+        "--cpus=2", "--memory=" + MEMORY_LIMIT, "--memory-swap=" + MEMORY_LIMIT,
         "-e", "ORT_INTRA_OP_THREADS=2",
-        "-e", "HF_HUB_OFFLINE=1", "-e", "TRANSFORMERS_OFFLINE=1",
         IMAGE,
     )
     try:

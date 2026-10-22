@@ -5,11 +5,11 @@ import logging
 import os
 from pathlib import Path
 import threading
-from typing import List, Optional
+from typing import Dict, List
 
 import numpy as np
 import onnxruntime as ort
-from transformers import AutoTokenizer
+from tokenizers import Tokenizer
 
 logger = logging.getLogger(__name__)
 MODEL_NAME = "social-embedding-v1.0"
@@ -43,9 +43,12 @@ class EmbeddingModel:
                 raise ValueError("unsupported pooling configuration; release specifies cls pooling")
             if int(manifest.get("max_sequence_length", 0)) != MAX_SEQUENCE_LENGTH:
                 raise ValueError("release maximum sequence length must be 128")
-            self.tokenizer = AutoTokenizer.from_pretrained(
-                str(self.model_dir), local_files_only=True, use_fast=True
-            )
+            self.tokenizer = Tokenizer.from_file(str(self.model_dir / "tokenizer.json"))
+            pad_token = self.tokenizer.token_to_id("[PAD]")
+            if pad_token is None:
+                raise ValueError("tokenizer.json must define the [PAD] token")
+            self.tokenizer.enable_truncation(max_length=MAX_SEQUENCE_LENGTH)
+            self.tokenizer.enable_padding(pad_id=pad_token, pad_token="[PAD]", pad_type_id=0)
             threads = max(1, int(os.getenv("ORT_INTRA_OP_THREADS", min(4, os.cpu_count() or 1))))
             options = ort.SessionOptions()
             options.intra_op_num_threads = threads
@@ -68,13 +71,7 @@ class EmbeddingModel:
     def embed(self, texts: List[str]) -> np.ndarray:
         if not texts or len(texts) > MAX_BATCH_SIZE:
             raise ValueError("batch size must be between 1 and 64")
-        encoded = self.tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            max_length=MAX_SEQUENCE_LENGTH,
-            return_tensors="np",
-        )
+        encoded = self._tokenize(texts)
         inputs = {key: value for key, value in encoded.items() if key in self.input_names}
         # ORT sessions are shared across requests; serialize run calls for safe CPU use.
         with self._lock:
@@ -86,3 +83,12 @@ class EmbeddingModel:
         truncated = pooled[:, :OUTPUT_DIMENSIONS]
         norms = np.linalg.norm(truncated, ord=2, axis=1, keepdims=True)
         return truncated / np.maximum(norms, 1e-12)
+
+    def _tokenize(self, texts: List[str]) -> Dict[str, np.ndarray]:
+        """Encode texts with the bundled tokenizer.json; never accesses the network."""
+        encodings = self.tokenizer.encode_batch(texts)
+        return {
+            "input_ids": np.asarray([encoding.ids for encoding in encodings], dtype=np.int64),
+            "attention_mask": np.asarray([encoding.attention_mask for encoding in encodings], dtype=np.int64),
+            "token_type_ids": np.asarray([encoding.type_ids for encoding in encodings], dtype=np.int64),
+        }
